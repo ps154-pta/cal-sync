@@ -1,119 +1,70 @@
-const { chromium } = require('playwright');
+const cal = require('./cal');
+const squarespace = require('./squarespace');
+const log = require('./log');
 
-async function toArray(asyncIterator) {
-  const arr = [];
-  for await (const i of asyncIterator) {
-    arr.push(i);
-  }
-  return arr;
+function areEventsEqual(squarespaceEvent, googleCalendarEvent) {
+  return squarespaceEvent.title === googleCalendarEvent.summary &&
+    cal.formatDateTime(squarespaceEvent.startDate, squarespaceEvent.startTime) === googleCalendarEvent.start.dateTime &&
+    cal.formatDateTime(squarespaceEvent.endDate, squarespaceEvent.endTime) === googleCalendarEvent.end.dateTime &&
+    squarespaceEvent.address === googleCalendarEvent.locator &&
+    squarespaceEvent.description === googleCalendarEvent.description &&
+    squarespaceEvent.href === googleCalendarEvent.source.url;
 }
 
-async function * getUpcomingEventsFromSquarespaceEventsList(page) {
-  await page.goto('https://www.ps154.org/events');
+async function syncEventsInGoogleCalender(latestSquarespaceEvents) {
+  const changes = {
+    toDelete: [],
+    toCreate: [],
+  };
 
-  const allUpcomingEvents = await page.locator('.eventlist-event.eventlist-event--upcoming').all()
+  const existingGoogleEvents = await cal.getAllEvents();
 
-  for (const event of allUpcomingEvents) {
-    const title = (await event.locator('.eventlist-title').textContent()).trim();
-    const href = await event.locator('.eventlist-title-link').getAttribute('href');
-
-    const startDateTimeLocator = await event.locator('.event-time-24hr > .event-time-24hr-start');
-    const startDate = await startDateTimeLocator.getAttribute('datetime');
-    const startTime = (await startDateTimeLocator.textContent()).trim();
-
-    let endDateTimeLocator = await event.locator('.event-time-24hr > .event-time-24hr-end');
-    if (!await endDateTimeLocator.isVisible()) {
-      // 12hr is a bug in squarespace :(
-      endDateTimeLocator = await event.locator('.event-time-24hr > .event-time-12hr-end');
-    }
-    const endDate = await endDateTimeLocator.getAttribute('datetime');
-    const endTime = (await endDateTimeLocator.textContent()).trim();
-
-    let address;
-    const addressLocator = await event.locator('.eventlist-meta-address');
-    if (await addressLocator.isVisible()) {
-      address = (await addressLocator.textContent()).trim();
-    }
-
-    let description;
-    const descriptionLocator = await event.locator('.eventlist-description');
-    if (await descriptionLocator.isVisible()) {
-      description = (await descriptionLocator.innerHTML()).trim();
-    }
-
-    let category;
-    const categoryLocator = await event.locator('.eventlist-cats');
-    if (await categoryLocator.isVisible()) {
-      category = (await categoryLocator.textContent()).trim();
-    }
-
-    yield {
-      title,
-      href: `https://www.ps154.org${href}`,
-      category,
-      startDate,
-      startTime,
-      endDate,
-      endTime,
-      address,
-      description,
-    };
-  }
-}
-
-async function * addZoomLinksToEvents(page, events) {
-  for (const event of events) {
-    await page.goto(event.href);
-    const allLinks = await page.locator('.eventitem-column-content a').all();
-    const zoomLinks = [];
-    for (const link of allLinks) {
-      const href = await link.getAttribute('href');
-      if (href.includes('https://zoom.us') || href.includes('https://nycdoe.zoom.us')) {
-        zoomLinks.push(href);
+  // Find new squarespace events to add
+  for (const latestSquarespaceEvent of latestSquarespaceEvents) {
+    let found = false;
+    for (const existingGoogleEvent of existingGoogleEvents.items) {
+      if (areEventsEqual(latestSquarespaceEvent, existingGoogleEvent)) {
+        found = true;
+        break;
       }
     }
-    yield {
-      ...event,
-      zoomLinks,
-    };
-  }
-}
-
-async function * addTagsToEvents(page, events) {
-  for (const event of events) {
-    await page.goto(event.href);
-    const tagsLocator = await page.locator('.eventitem-meta-tags');
-    let tags;
-    if (await tagsLocator.isVisible()) {
-      const tagString = (await tagsLocator.textContent()).trim();
-      tags = tagString.split('Tagged ')[1];
+    if (!found) {
+      changes.toCreate.push(latestSquarespaceEvent);
     }
-    yield {
-      ...event,
-      tags,
-    };
   }
-}
 
-async function getEventsFromSquarespace() {
-  const browser = await chromium.launch();
-  try {
-    const page = await browser.newPage();
-    console.error('fetching upcoming events...');
-    const events = await toArray(getUpcomingEventsFromSquarespaceEventsList(page));
-    console.error('fetching event tags...');
-    const eventsWithTags = await toArray(addTagsToEvents(page, events));
-    console.error('fetching event zoom links...');
-    const eventsWithZoomLinks = await toArray(addZoomLinksToEvents(page, events));
-    return eventsWithZoomLinks;
-  } finally {
-    await browser.close();
+  // Find existing Google Calendar events to remove
+  for (const existingGoogleEvent of existingGoogleEvents.items) {
+    let found = false;
+    for (const latestSquarespaceEvent of latestSquarespaceEvents) {
+      if (areEventsEqual(latestSquarespaceEvent, existingGoogleEvent)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found && new Date(existingGoogleEvent.start.dateTime) > new Date()) {
+      changes.toDelete.push(existingGoogleEvent);
+    }
+  }
+
+  log.debugJSON(changes);
+
+  for (const e of changes.toDelete) {
+    log.info('Google Calendar delete event:', e.summary);
+    const result = await cal.deleteEvent(e.id);
+    log.debugJSON(result);
+  }
+
+  for (const e of changes.toCreate) {
+    log.info('Google Calendar create event:', e.title);
+    const result = await cal.createEvent(e);
+    log.debugJSON(result);
   }
 }
 
 async function main() {
-  const events = await getEventsFromSquarespace();
-  console.log(JSON.stringify(events));
+  const events = await squarespace.getEvents();
+  await syncEventsInGoogleCalender(events);
 }
 
 main();

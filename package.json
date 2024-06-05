@@ -10,5 +10,9 @@
   "license": "ISC",
   "devDependencies": {
     "playwright": "^1.44.1"
+  },
+  "dependencies": {
+    "google-auth-library": "^9.10.0",
+    "sanitize-html": "^2.13.0"
   }
 }
