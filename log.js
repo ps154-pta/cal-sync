@@ -4,10 +4,10 @@ function logJSONDebug(obj) {
   console.error(JSON.stringify(obj));
 }
 
-function logInfo(message) {
-  console.log(message);
+function logInfo(message, ...args) {
+  console.log(message, ...args);
   if (DEBUG) {
-    logJSONDebug({log: 'info', message});
+    logJSONDebug({log: 'info', message, args});
   }
 }
 

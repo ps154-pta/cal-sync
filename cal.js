@@ -3,10 +3,21 @@ const { GoogleAuth } = require('google-auth-library');
 const sanitizeHtml = require('sanitize-html');
 
 const SERVICE_ACCOUNT_KEY = require('./service-account-key.json');
+const utils = require('./utils');
 
+const creator = "ps-154-calendar-sync@my-project-1470240980331.iam.gserviceaccount.com";
 const calendarId = querystring.escape('728f7eeb1f5d4129b649b2e91273feac0a4ce664660c23c11ef879e5a16a628e@group.calendar.google.com');
-const EVENTS_URI = `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`;
-const EVENT_URI = (eventId) => `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${eventId}`;
+const EVENTS_URI = (pageToken, maxResults) => {
+  const base = `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`;
+  const params = {};
+  if (pageToken) params.pageToken = pageToken;
+  if (maxResults) params.maxResults = maxResults;
+  if (utils.isEmpty(params)) return base;
+  const qs = querystring.stringify(params);
+  return `${base}?${qs}`;
+};
+const EVENT_URI = (eventId) =>
+  `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${eventId}`;
 
 let DEFAULT_OPTIONS;
 
@@ -38,7 +49,6 @@ function payloadFromEvent(event) {
     entryPointType: 'video',
     uri,
   }));
-
   let description = event.description;
   if (description) {
     description = description.replace(/\n/g, '');
@@ -54,7 +64,6 @@ function payloadFromEvent(event) {
     description = description.trim();
     description = `<p><a href="${event.href}">Event page</a></p><div>${description}</div>`;
   }
-
   const payload = {
     summary: event.title,
     description,
@@ -70,25 +79,50 @@ function payloadFromEvent(event) {
       dateTime: formatDateTime(event.endDate, event.endTime),
       timeZone: DEFAULT_TIMEZONE,
     },
-    conferenceData: {
+  };
+  if (conferenceDataEntryPoints.length > 0) {
+    payload.conferenceData = {
       conferenceSolution: {
         key: {
           type: 'addOn',
-          name: 'Zoom',
         },
+        name: 'Zoom',
       },
       entryPoints: conferenceDataEntryPoints,
-    },
-  };
+    };
+  }
   return payload;
+}
+
+function areEventsEqual(event, googleCalendarEvent) {
+  const eventPayload = payloadFromEvent(event);
+  return eventPayload.summary === googleCalendarEvent.summary &&
+    eventPayload.start.dateTime === googleCalendarEvent.start.dateTime &&
+    eventPayload.end.dateTime === googleCalendarEvent.end.dateTime &&
+    eventPayload.location === googleCalendarEvent.location &&
+    eventPayload.description === googleCalendarEvent.description &&
+    eventPayload.source.url === googleCalendarEvent.source.url;
 }
 
 async function getAllEvents() {
   await init();
-  const res = await fetch(EVENTS_URI, {
-    ...DEFAULT_OPTIONS,
-  });
-  return await res.json();
+  let items = [];
+  let pageToken;
+  do {
+    const res = await fetch(EVENTS_URI(pageToken, 250), {
+      ...DEFAULT_OPTIONS,
+    });
+    const resBody = await res.json();
+    items = [
+      ...items,
+      ...resBody.items,
+    ];
+    if (res.nextPageToken && pageToken === res.nextPageToken) {
+      throw new Error('Google Calendar nextPageToken error');
+    }
+    pageToken = resBody.nextPageToken;
+  } while (pageToken);
+  return items;
 }
 
 async function getEvent(eventId) {
@@ -106,7 +140,7 @@ async function createEvent(event) {
     body: JSON.stringify(payloadFromEvent(event)),
     ...DEFAULT_OPTIONS,
   };
-  const res = await fetch(EVENTS_URI, options);
+  const res = await fetch(EVENTS_URI(), options);
   return res.json();
 }
 
@@ -135,4 +169,6 @@ module.exports = {
   createEvent,
   updateEvent,
   deleteEvent,
+  areEventsEqual,
+  creator,
 };

@@ -1,6 +1,7 @@
 - [ ] Colorize events based on tags or categories (or separate calendars?)
-- [ ] Sync all past events from Squarespace
+- [ ] Make zoom links show up properly
+- [x] Sync all past events from Squarespace
 - [ ] Don't remove space from description in this case: <p>Hello <a href="https://foo.com">World</a></p>
 - [ ] Dont' show "(map)" at the end of the location
-- [ ] Publish code to public repo
-- [ ] Deploy code (Google Cloud?)
+- [x] Publish code to public repo
+- [ ] Deploy code (Google Cloud? GitHub Actions?)

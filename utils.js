@@ -6,6 +6,13 @@ async function toArray(asyncIterator) {
   return arr;
 }
 
+function isEmpty(value) {
+  for (let prop in value) {
+    if (value.hasOwnProperty(prop)) return false;
+  }
+  return true;
+}
+
 function all(arr, predicate) {
   for (const item in arr) {
     if (!predicate(item)) {
@@ -25,5 +32,8 @@ function any(arr, predicate) {
 }
 
 module.exports = {
-  toArray, all, any,
+  toArray,
+  isEmpty,
+  all,
+  any,
 };

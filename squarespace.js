@@ -10,129 +10,188 @@ const VALID_ZOOM_ROOTS = [
   'https://zoom.us',
   'https://nycdoe.zoom.us',
 ];
+const MAX_FETCHED_MONTHS = -1;
+const MAX_CONSECUTIVE_EMPTY_MONTHS = 4;
 
-async function * getUpcomingEventsFromSquarespaceEventsList(page) {
-  await page.goto(PS154_EVENTS_URI);
+async function * getAllEventURIsFromSquarespaceCalendar(page) {
+  await page.goto(PS154_CALENDAR_URI);
 
-  const allUpcomingEvents = await page.locator('.eventlist-event.eventlist-event--upcoming').all();
-
-  for (const event of allUpcomingEvents) {
-    const title = (await event.locator('.eventlist-title').textContent()).trim();
-    const href = await event.locator('.eventlist-title-link').getAttribute('href');
-
-    const startDateTimeLocator = await event.locator('.event-time-24hr > .event-time-24hr-start');
-    const startDate = await startDateTimeLocator.getAttribute('datetime');
-    const startTime = (await startDateTimeLocator.textContent()).trim();
-
-    let endDateTimeLocator = await event.locator('.event-time-24hr > .event-time-24hr-end');
-    if (!await endDateTimeLocator.isVisible()) {
-      // 12hr is a bug in squarespace :(
-      endDateTimeLocator = await event.locator('.event-time-24hr > .event-time-12hr-end');
-    }
-    const endDate = await endDateTimeLocator.getAttribute('datetime');
-    const endTime = (await endDateTimeLocator.textContent()).trim();
-
-    let address;
-    const addressLocator = await event.locator('.eventlist-meta-address');
-    if (await addressLocator.isVisible()) {
-      address = (await addressLocator.textContent()).trim();
-    }
-
-    let description;
-    const descriptionLocator = await event.locator('.eventlist-description');
-    if (await descriptionLocator.isVisible()) {
-      description = await descriptionLocator.innerHTML();
-    }
-
-    let category;
-    const categoryLocator = await event.locator('.eventlist-cats');
-    if (await categoryLocator.isVisible()) {
-      category = (await categoryLocator.textContent()).trim();
-    }
-
-    yield {
-      title,
-      href: `${PS154_ROOT}${href}`,
-      category,
-      startDate,
-      startTime,
-      endDate,
-      endTime,
-      address,
-      description,
-    };
-  }
-}
-
-async function * getAllEventsFromSquarespaceCalendar(page) {
   const previousMonthButton = await page.locator('a[aria-label="Go to previous month"]');
-  const title = page.getByRole('heading');
-  const daysThatHaveEvents = page.locator('.has-event[role="gridcell]"').all();
-  for (const day of daysThatHaveEvents) {
-    const dayNumber = page.locator('.marker-daynum').textContent();
-    const eventLink = page.locator('.item-link');
-    eventLink.click();
-    // TODO Scrape event page
-  }
-}
 
-async function getEventFromSquarespaceEventPage(uri) {
-
-}
-
-async function * addZoomLinksToEvents(page, events) {
-  for (const event of events) {
-    await page.goto(event.href);
-    const allLinks = await page.locator('.eventitem-column-content a').all();
-    const zoomLinks = [];
-    for (const link of allLinks) {
-      const href = await link.getAttribute('href');
-      if (utils.any(VALID_ZOOM_ROOTS, (uri) => href.includes(uri))) {
-        zoomLinks.push(href);
+  let fetchedMonths = 0;
+  let consecutiveEmptyMonths = 0;
+  while (consecutiveEmptyMonths < MAX_CONSECUTIVE_EMPTY_MONTHS) {
+    const title = (await page.locator('.yui3-calendar-header [aria-role="heading"]').textContent()).trim();
+    log.info(`Loading events from ${title}`);
+    let emptyMonth = false;
+    try {
+      await page.locator('.has-event').nth(0).waitFor({state: 'attached', timeout: 5000});
+    } catch (e) {
+      emptyMonth = true;
+    }
+    if (!emptyMonth) {
+      const daysThatHaveEvents = await page.locator('.has-event[role="gridcell"]').all();
+      emptyMonth = true;
+      for (const day of daysThatHaveEvents) {
+        const eventLinks = await day.locator('li:not([class*="item--ongoing"]) > .item-link').all();
+        for (const eventLink of eventLinks) {
+          emptyMonth = false;
+          const eventURI = await eventLink.getAttribute('href');
+          log.info(`Found event ${eventURI}`);
+          yield `${PS154_ROOT}${eventURI}`;
+        }
       }
     }
-    yield {
-      ...event,
-      zoomLinks,
-    };
-  }
-}
-
-async function * addTagsToEvents(page, events) {
-  for (const event of events) {
-    await page.goto(event.href);
-    const tagsLocator = await page.locator('.eventitem-meta-tags');
-    let tags;
-    if (await tagsLocator.isVisible()) {
-      const tagString = (await tagsLocator.textContent()).trim();
-      tags = tagString.split('Tagged ')[1];
+    if (emptyMonth) {
+      log.info('(empty month)');
+      consecutiveEmptyMonths++;
+    } else {
+      consecutiveEmptyMonths = 0;
     }
-    yield {
-      ...event,
-      tags,
-    };
+
+    if (MAX_FETCHED_MONTHS > 0 && fetchedMonths > MAX_FETCHED_MONTHS) {
+      break;
+    }
+    await previousMonthButton.click();
+    fetchedMonths++;
   }
 }
 
-async function getEventsFromSquarespace() {
+async function getEventFromSquarespaceEventPage(page, uri) {
+  log.info(`Loading event from ${uri}`);
+
+  let retry = 5;
+  while (retry > 0) {
+    await page.goto(uri);
+    try {
+      await page.locator('.eventitem-title').waitFor({state: 'attached', timeout: 5000});
+      break;
+    } catch {
+      retry--;
+      log.info(`Retrying ${uri}`);
+    }
+  }
+  if (retry <= 0) {
+    throw new Error(`Failed to properly load ${uri}`);
+  }
+
+  // Event title
+  const title = (await page.locator('.eventitem-title').textContent()).trim();
+
+  // Event page URI
+  const href = `${PS154_ROOT}${page.url()}`;
+
+  // Event start/end date/time
+  let startDateTimeLocator = await page.locator('.event-time-24hr > .event-time-24hr-start');
+  let endDateTimeLocator = await page.locator('.event-time-24hr > .event-time-24hr-end');
+  if (await endDateTimeLocator.count() === 0) {
+    // 12hr is a bug in squarespace :(
+    endDateTimeLocator = await page.locator('.event-time-24hr > .event-time-12hr-end');
+  }
+  const startDateTimeLocatorCount = await startDateTimeLocator.count();
+  const endDateTimeLocatorCount = await endDateTimeLocator.count();
+  console.log(startDateTimeLocatorCount, endDateTimeLocatorCount);
+  if (startDateTimeLocatorCount === 0 && endDateTimeLocatorCount === 0) {
+    // If no start/end dates visible, then assume this is the multi-day format:
+    /*
+     * <li class="eventitem-meta-date">
+     *   <span class="eventitem-meta-time">
+     *     <time class="event-time-24hr" datetime="2024-05-23">14:00</time>
+     *   </span>
+     *   <span class="eventitem-meta-time">
+     *     <time class="event-time-24hr" datetime="2024-05-24">14:00</time>
+     *   </span>
+     * </li>
+     */
+    startDateTimeLocator = await page.locator('.event-time-24hr').nth(0);
+    endDateTimeLocator = await page.locator('.event-time-24hr').nth(1);
+  }
+  const startDate = await startDateTimeLocator.getAttribute('datetime');
+  const startTime = (await startDateTimeLocator.textContent()).trim();
+  const endDate = await endDateTimeLocator.getAttribute('datetime');
+  const endTime = (await endDateTimeLocator.textContent()).trim();
+
+  // Event address
+  let address;
+  const addressLocator = await page.locator('.eventitem-meta-address');
+  if (await addressLocator.count() > 0) {
+    address = (await addressLocator.textContent()).trim();
+  }
+
+  // Event description
+  let description;
+  const descriptionLocator = await page.locator('.eventitem-column-content');
+  if (await descriptionLocator.count() > 0) {
+    description = await descriptionLocator.innerHTML();
+  }
+
+  // Event category
+  let category;
+  const categoryLocator = await page.locator('.eventitem-meta-cats');
+  if (await categoryLocator.count() > 0) {
+    category = (await categoryLocator.textContent()).trim();
+  }
+
+  // Event zoom links
+  const allLinks = await page.locator('.eventitem-column-content a').all();
+  const zoomLinks = [];
+  for (const link of allLinks) {
+    const href = await link.getAttribute('href');
+    if (utils.any(VALID_ZOOM_ROOTS, (uri) => href.includes(uri))) {
+      zoomLinks.push(href);
+    }
+  }
+
+  // Event tags
+  const tagsLocator = await page.locator('.eventitem-meta-tags');
+  let tags;
+  if (await tagsLocator.count() > 0) {
+    const tagString = (await tagsLocator.textContent()).trim();
+    tags = tagString.split('Tagged ')[1];
+  }
+
+  const squarespaceEvent = {
+    title,
+    href,
+    startDate,
+    startTime,
+    endDate,
+    endTime,
+    address,
+    description,
+    category,
+    tags,
+    zoomLinks,
+  };
+
+  log.debugJSON(squarespaceEvent);
+
+  if (!title || !href || !startDate || !startTime || !endDate || !endTime) {
+    throw new Error('Invalid event');
+  }
+
+  return squarespaceEvent;
+}
+
+async function getAllEventsFromSquarespace() {
   const browser = await chromium.launch();
-  try {
+  try{
     const page = await browser.newPage();
-    log.info('Fetching Squarespace upcoming events...');
-    const events = await utils.toArray(getUpcomingEventsFromSquarespaceEventsList(page));
-    log.debugJSON(events);
-    log.info('Fetching Squarespace event tags...');
-    const eventsWithTags = await utils.toArray(addTagsToEvents(page, events));
-    log.debugJSON(eventsWithTags);
-    log.info('Fetching Squarespace event zoom links...');
-    const eventsWithZoomLinks = await utils.toArray(addZoomLinksToEvents(page, events));
-    log.debugJSON(eventsWithZoomLinks);
-    return eventsWithZoomLinks;
+    log.info('Fetching Squarespace events...');
+    const eventURIs = await utils.toArray(getAllEventURIsFromSquarespaceCalendar(page));
+    eventURIs.sort();
+    log.debugJSON(eventURIs);
+    const events = [];
+    for (const eventURI of eventURIs) {
+      const event = await getEventFromSquarespaceEventPage(page, eventURI);
+      events.push(event);
+    }
+    return events;
   } finally {
     await browser.close();
   }
 }
 
 module.exports = {
-  getEvents: getEventsFromSquarespace,
+  getAllEvents: getAllEventsFromSquarespace,
 };
