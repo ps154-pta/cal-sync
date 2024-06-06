@@ -79,7 +79,7 @@ async function getEventFromSquarespaceEventPage(page, uri) {
   const title = (await page.locator('.eventitem-title').textContent()).trim();
 
   // Event page URI
-  const href = `${PS154_ROOT}${page.url()}`;
+  const href = page.url();
 
   // Event start/end date/time
   let startDateTimeLocator = await page.locator('.event-time-24hr > .event-time-24hr-start');
